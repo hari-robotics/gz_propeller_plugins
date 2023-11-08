@@ -7,7 +7,7 @@
   <maintainer email="zzh_robotic@163.com">hari</maintainer>
   <license>MIT License</license>
 
-  <build_depend>gazebo_ros</build_depend>
+  <build_depend>gazebo_dev</build_depend>
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <test_depend>ament_lint_auto</test_depend>

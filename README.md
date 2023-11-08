@@ -9,8 +9,11 @@ __Mention: This plugin does not actuates the propeller but only simulate the beh
 
 ## Dependence
 This plugin uses `colcon tools` to build, and before you compiling the code, make sure you have following dependencies:
+* ROS2 colcon tools
+* Gazebo v11+
+* libgazebo-dev
 ```bash
-sudo apt install ros-${ROS_DISTRO}-gazebo-ros* clang
+sudo apt install libgazebo-dev
 ```
 
 ## Usage
@@ -40,6 +43,7 @@ echo "export GAZEBO_PLUGIN_PATH=${GAZEBO_PLUGIN_PATH}:${pwd}/build/gz_propeller_
 
 To use this plugin in your gazebo, add the following context in your urdf file:
 ```xml
+<gazebo>
   <plugin name="PropellerPlugin" filename="libgz_propeller_plugins.so">
     <!-- 
         param: 
@@ -51,8 +55,9 @@ To use this plugin in your gazebo, add the following context in your urdf file:
     <joint name="" direction="" torque_constant="" force_constant="" />
     ...
   </plugin>
+</gazebo>
 ```
 
 ## TODOs
 * Add more parameters of the propeller to get a more accurate performance with the real world.
-* Remove the build dependence of `colcon tool`, `clang` and `gazebo_ros` to make the build environment more universal.
+* Remove the building depend `colcon tool`.
