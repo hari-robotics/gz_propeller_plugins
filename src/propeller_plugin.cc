@@ -1,16 +1,16 @@
 #include <cmath>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
 
 #include "gazebo/common/common.hh"
+#include "gazebo/physics/ModelState.hh"
 #include "gazebo/physics/physics.hh"
 #include "ignition/math/Vector3.hh"
 #include "sdf/Element.hh"
 
 namespace gz_propeller_plugins {
-
-// Using types from namespaces
 // clang-format off
 using Str              = std::string;
 using Thread           = std::thread;
@@ -21,55 +21,51 @@ using ModelPtr         = gazebo::physics::ModelPtr;
 using JointPtr         = gazebo::physics::JointPtr;
 // clang-format on
 
-// Typedefs
+
 typedef struct {
-    Str direction;
+    JointPtr ptr;
+    int8_t dir_sign_;
     double_t force_constant;
     double_t torque_constant;
     bool invert_z_axis;
 } JointValue;
 
-typedef std::map<JointPtr, JointValue> JointMap;
 
-// Plugin Private Class implementation
 class PropellerPrivate {
 public:
     PropellerPrivate() {}
     virtual ~PropellerPrivate() {}
 
     ModelPtr parent_model_;
-    ElementPtr current_element_;
     ConnectionPtr update_connection_;
-    JointMap joints_;
-    int8_t torque_sign_;
+    std::vector<JointValue> joints_;
 
     void OnUpdate() {
-        for (std::pair<JointPtr, JointValue> joint : joints_) {
-            if (joint.second.direction == "CCW" || joint.second.direction == "ccw") {
-                torque_sign_ = 1;
-            } else if (joint.second.direction == "CW" || joint.second.direction == "cw") {
-                torque_sign_ = -1;
-            } else {
-                std::cout << "Invalid direction. Plugin won't work." << std::endl;
-                return;
-            }
+        for (std::vector<JointValue>::iterator joint = joints_.begin(); joint != joints_.end(); joint++) {
+            // Get propeller properties
+            auto w_prop = joint->ptr->GetVelocity(3);
+            auto C_t = joint->torque_constant;
+            auto C_f = joint->force_constant;
 
-            // Alias name
-            auto tmp_angular_vel = joint.first->GetVelocity(3);
-            auto torque_constant = joint.second.torque_constant;
-            auto force_constant = joint.second.force_constant;
-            auto tmp_child_pose = joint.first->GetChild()->WorldPose().Rot();
+            // Get transform matrix for propeller frame to body frame
+            auto trans_world2prop = joint->ptr->GetChild()->WorldPose();
+            auto trans_world2body = joint->ptr->GetParent()->WorldPose();
+            auto trans_prop2body = trans_world2prop * trans_world2body.Inverse();
 
-            // Temp variables
-            auto tmp_force = Vector3d(0, 0, force_constant * tmp_angular_vel * abs(tmp_angular_vel) * torque_sign_);
-            auto tmp_inverse_torque = Vector3d(0, 0, -torque_constant * tmp_angular_vel * abs(tmp_angular_vel));
+            // Force and torque relative to the propeller link
+            auto f_prop = Vector3d(0, 0, C_f * w_prop * abs(w_prop) * joint->dir_sign_);
+            auto t_prop = Vector3d(0, 0, -C_t * w_prop * abs(w_prop));
 
-            // Apply force and torque to the propeller
-            joint.first->GetParent()->AddForce(tmp_child_pose.RotateVector(tmp_force));
+            // Force and torque relative to the body link
+            auto f_body = trans_prop2body.Rot().RotateVector(f_prop);
+            auto t_body = trans_prop2body.Rot().RotateVector(t_prop);
 
-            // Apply inverse torque to the parent link
-            joint.first->GetParent()->AddTorque(tmp_child_pose.RotateVector(tmp_inverse_torque));
+            // Apply force and torque to the connected parent link
+            joint->ptr->GetParent()->AddRelativeForce(f_body);
+            joint->ptr->GetParent()->AddRelativeTorque(t_body);
+            // std::cout << "Prop Force: " << f_body << std::endl;
         }
+        std::cout << "Body Force: " << joints_.begin()->ptr->GetParent()->RelativeForce() << std::endl;
     }
 };
 
@@ -83,53 +79,76 @@ public:
     }
 
     void Load(ModelPtr _model, ElementPtr _sdf) {
+        // >>> load model >>>
         if (!_model) {
             std::cout << "Missing model. Plugin won't work." << std::endl;
             return;
         }
         impl_->parent_model_ = _model;
         std::cout << "get model:" << _model->GetName() << std::endl;
+        // <<< load model <<<
 
+        // >>> load joint >>>
         if (!_sdf->HasElement("joint")) {
             std::cout << "Missing joint. Plugin won't work." << std::endl;
             return;
         }
-        impl_->current_element_ = _sdf->GetElement("joint");
+        auto current_element = _sdf->GetElement("joint");
+        // <<< load joint <<<
 
-        while (impl_->current_element_) {
-            JointPtr pJoint;
+        // >>> load propeller parameters >>>
+        while (current_element) {
             JointValue joints_value;
 
-            if (!impl_->current_element_->HasAttribute("name")) {
+            // >>> Propeller joint >>>
+            if (!current_element->HasAttribute("name")) {
                 std::cout << "Missing joint name. Plugin won't work." << std::endl;
                 return;
             }
-            pJoint = _model->GetJoint(impl_->current_element_->Get<Str>("name"));
+            joints_value.ptr = _model->GetJoint(current_element->Get<Str>("name"));
+            // <<< Propeller joint <<<
 
-            if (!impl_->current_element_->HasAttribute("direction")) {
+            // >>> Propeller direction >>>
+            if (!current_element->HasAttribute("direction")) {
                 std::cout << "Missing joint direction. Plugin won't work." << std::endl;
                 return;
             }
-            joints_value.direction = impl_->current_element_->Get<Str>("direction");
 
-            if (!impl_->current_element_->HasAttribute("torque_constant")) {
+            auto direction = current_element->Get<Str>("direction");
+
+            if (direction == "CCW" || direction == "ccw") { // 3,4,5,6
+                joints_value.dir_sign_ = 1; // vel + -> force + / vel - -> force -
+            } else if (direction == "CW" || direction == "cw") { // 1,2,7,8
+                joints_value.dir_sign_ = -1; // vel + -> force - / vel - -> force +
+            } else {
+                std::cout << "Invalid direction. Plugin won't work." << std::endl;
+                return;
+            }
+            // <<< Propeller direction <<<
+            
+            // >>> Propeller torque constant >>>
+            if (!current_element->HasAttribute("torque_constant")) {
                 std::cout << "Missing joint torque constant. Default set to 0" << std::endl;
                 joints_value.torque_constant = 0;
             }
-            joints_value.torque_constant = impl_->current_element_->Get<double>("torque_constant");
+            joints_value.torque_constant = current_element->Get<double>("torque_constant");
+            // <<< Propeller torque constant <<<
 
-            if (!impl_->current_element_->HasAttribute("force_constant")) {
+            // >>> Propeller force constant >>>
+            if (!current_element->HasAttribute("force_constant")) {
                 std::cout << "Missing joint force constant. Default set to 0" << std::endl;
                 joints_value.force_constant = 0;
             }
-            joints_value.force_constant = impl_->current_element_->Get<double>("force_constant");
+            joints_value.force_constant = current_element->Get<double>("force_constant");
+            // <<< Propeller force constant <<<
 
-            // Add joint config to the map
-            impl_->joints_.insert(JointMap::value_type(pJoint, joints_value));
-            impl_->current_element_ = impl_->current_element_->GetNextElement("joint");
-
-            std::cout << "get segment: " << impl_->joints_.find(pJoint)->first->GetName() << std::endl;
+            // >>> Save config and search for next propeller >>>
+            impl_->joints_.emplace_back(joints_value);
+            current_element = current_element->GetNextElement("joint");
+            std::cout << "get segment: " << joints_value.ptr->GetName() << std::endl;
+            // <<< Save config and search for next propeller <<<
         }
+        // <<< load propeller parameters<<<
     }
 
     void Init() {
